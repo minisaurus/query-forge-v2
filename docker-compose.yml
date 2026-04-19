@@ -1,0 +1,12 @@
+services:
+  query-forge-v2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: QueryForge-v2
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
