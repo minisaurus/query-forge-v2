@@ -1,223 +1,121 @@
-# QueryForge v2 — Architecture Plan
+# QueryForge v2 — Status
 
 ## Overview
 
 Literary agent finder and query letter generator. Rebuilt from scratch to replace the monolithic 1236-line Streamlit app with a clean, modular NiceGUI application.
 
-## UI Framework: NiceGUI
+**Status: PAUSED** — App is live and functional, scraping pipeline needs to be wired up.
 
-- Quasar components (production-grade tables, forms, dialogs)
-- Single Docker container, FastAPI + Uvicorn backend
-- Port: **12123**
-- No Node.js build step required
+**Live at:** http://192.168.1.169:12123
 
-## LLM Pipeline: 3 Agents (simplified from 9)
+## What's Built
 
-| Stage | What | LLM? |
-|---|---|---|
-| 1. Guidelines Parser | Extract structured requirements from raw guidelines per agency (cached) | YES |
-| 2. Letter Writer | Write personalized paragraph(s) based on guidelines + manuscript data | YES |
-| 3. Auditor | Review, grade, and suggest fixes (optional pass) | YES |
+### UI (NiceGUI + Quasar)
+- 7 pages: Dashboard, Agents, Agencies, Manuscripts, Authors, Query Letters, Scraper
+- Pagination on Agents page (20 per page)
+- Copy-to-clipboard button on agent emails
+- All pages returning HTTP 200
 
-Fixed content (header, address, comps line, synopsis, bio, closing) — filled by Python, no LLM.
+### Backend
+- PostgreSQL `queryforge` database (5 tables: agencies, authors, manuscripts, query_letters, scraping_jobs)
+- Qdrant `literary-agents` collection: 151 agents, 90 agencies (read/write)
+- Qdrant `top-book-titles` collection: 396 books, 13 genres (read-only, from qdrant-forge)
+- SQLAlchemy ORM for all PostgreSQL operations
 
-## Data Sources
+### Services (code complete, untested end-to-end)
+- `guidelines_parser.py` — LLM parses raw guidelines into structured JSON
+- `letter_writer.py` — LLM writes personalized query letter body
+- `letter_auditor.py` — LLM grades letter (8 criteria, A+ to F)
+- `mail_merge.py` — Assembles fixed content + LLM content into final letter
+- `comp_matcher.py` — Semantic search against qdrant-forge for comp title lookups
+- `llm_client.py` — GLM-4.7 + OpenRouter embedding
 
-| Source | Type | Contents | Managed By |
-|---|---|---|---|
-| `literary-agents` (Qdrant) | 151 agents, 90 agencies | Agent name, agency, genres, email, submission method, guidelines URL | QueryForge v2 (read/write) |
-| `top-book-titles` (Qdrant) | 396 books, 13 genres | Title, author, genre, Goodreads rating/reviews, pages, year, series | qdrant-forge (read-only for QF2) |
-| PostgreSQL | Structured data | Agencies, parsed guidelines, manuscripts, authors, query letters | QueryForge v2 (read/write) |
+### Docker
+- Single container on port 12123, `network_mode: host`
+- Image: `query-forge-v2-query-forge-v2`
 
-### Qdrant Collections
+## What Needs Work
 
-**`literary-agents`** — Agent data, 4096-dim cosine vectors (Qwen3-Embedding-8B)
-- Agent fields: name, agency, genres, accepts_new_authors, agency_size, submission_method, response_time, sales_track_record, guidelines_url, website, bio, notes, email, twitter, last_updated, source, agency_website, location, phone, preferred_contact, source_genre, submission_guidelines_url
+### High Priority
+- **Scraper pipeline** — The Scraper page UI is a shell with placeholder functions. Needs to be wired up to:
+  - `searxng_client.py` — Search agent directories
+  - `crawl4ai_client.py` — Scrape pages
+  - Agent extraction from scraped pages via LLM
+  - Store results in Qdrant
 
-**`top-book-titles`** — Book database, 4096-dim cosine vectors (managed by qdrant-forge)
-- Book fields: title, author, genre, goodreads_rating, goodreads_ratings_count, goodreads_reviews_count, pages, published_year, series, titling_pattern, data_source
-- Genres: Literary / Magical Realism, Myth Retelling / Feminism, Regency / Gaslamp Fantasy, Dark Academia, Historical Children's Fantasy, Contemporary Fantasy, Fantasy, Feminism, Fiction, Young Adult, Young Adult Historical Fantasy, dark fantasy, witches
+### Medium Priority
+- **Query letter generation** — Code is complete but hasn't been tested with real manuscripts
+- **Guidelines sync** — Store/retrieve parsed guidelines from PostgreSQL
+- **DOCX export** — Add export-to-Word for query letters
+- **Agent enrichment** — Fill missing agent data (email, website, location) via web search
 
-### Integration with qdrant-forge
+### Nice to Have
+- Authentication (login to protect data)
+- Agent filtering by multiple genres
+- Manuscript version history (track edits over time)
+- Bulk query letter generation (select multiple agents)
 
-1. **Comp Title Lookups** — Verify comp titles against `top-book-titles`, suggest similar books via semantic search
-2. **Genre Validation** — Cross-reference manuscript genre against known genres
-3. **Market Positioning** — LLM references market data in query letters (ratings, popularity)
-4. **Agent-Genre Matching** — Match agents whose genres overlap with books in user's genre space
-
-### Scraping Sources
-
-Primary (proven): QueryTracker, AgentQuery, MSWishList, AAR Online
-Secondary (to explore): Publishers Marketplace, Manuscript Wish List, etc.
-Tools: SearXNG (192.168.1.169:11999), crawl4ai
-
-## App Structure
+## Architecture
 
 ```
 query-forge-v2/
-├── app.py                    # NiceGUI entry point + navigation
-├── config.py                 # Settings, API keys, DB connections
+├── app.py                    # NiceGUI entry point + 7 page routes
+├── config.py                 # Config from .env
 ├── models/
-│   ├── database.py           # PostgreSQL connection + SQLAlchemy models
-│   ├── qdrant_agents.py      # Qdrant `literary-agents` CRUD + search
-│   ├── qdrant_books.py       # Qdrant `top-book-titles` queries (READ-ONLY)
-│   ├── agency.py             # Agency CRUD (PostgreSQL)
-│   ├── manuscript.py         # Manuscript CRUD (PostgreSQL)
-│   ├── author.py             # Author CRUD (PostgreSQL)
-│   └── query_letter.py       # Query letter CRUD (PostgreSQL)
+│   ├── database.py          # SQLAlchemy models + engine
+│   ├── qdrant_agents.py      # literary-agents CRUD + semantic search
+│   └── qdrant_books.py       # top-book-titles queries (read-only)
 ├── pages/
-│   ├── dashboard.py          # Stats, quick actions
-│   ├── agents.py             # Browse/search/enrich agents
-│   ├── agencies.py           # Manage agencies + parsed guidelines
-│   ├── manuscripts.py        # Manuscript CRUD
-│   ├── authors.py            # Author profiles
-│   ├── query_letters.py      # Generate/review/export letters
-│   └── scraper.py            # Run scraping/enrichment jobs
-├── services/
-│   ├── scraper.py            # SearXNG + crawl4ai agent scraping
-│   ├── guidelines_parser.py  # LLM: parse raw guidelines → structured
-│   ├── letter_writer.py      # LLM: write personalized content
-│   ├── letter_auditor.py     # LLM: review + grade
-│   ├── mail_merge.py         # Assemble fixed + custom content → DOCX
-│   └── comp_matcher.py       # Semantic search against top-book-titles
-├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-└── .env
+│   ├── dashboard.py          # Stats overview
+│   ├── agents.py             # Browse/search agents (Qdrant)
+│   ├── agencies.py          # List agencies + guidelines status
+│   ├── manuscripts.py        # Manuscript CRUD + comp suggestions
+│   ├── authors.py            # Author CRUD
+│   ├── query_letters.py      # Generate letters
+│   └── scraper.py            # Scraping job runner (placeholder)
+└── services/
+    ├── llm_client.py        # GLM-4.7 + OpenRouter embedding
+    ├── guidelines_parser.py  # LLM: raw → structured guidelines
+    ├── letter_writer.py      # LLM: personalized query content
+    ├── letter_auditor.py     # LLM: grade + critique
+    ├── mail_merge.py         # Assemble final letter
+    └── comp_matcher.py       # Comp title lookup
 ```
 
-## PostgreSQL Schema
+## Data Schema
 
-### Table: agencies
-```
-id              SERIAL PRIMARY KEY
-name            VARCHAR(255) NOT NULL UNIQUE
-website         TEXT
-location        TEXT
-size            VARCHAR(50)
-guidelines_url  TEXT
-guidelines_raw  TEXT
-guidelines_parsed JSONB
-last_scraped_at TIMESTAMP
-created_at      TIMESTAMP DEFAULT NOW()
-updated_at      TIMESTAMP DEFAULT NOW()
-```
+### PostgreSQL Tables
 
-### Table: authors
-```
-id                  SERIAL PRIMARY KEY
-name                VARCHAR(255) NOT NULL
-email               VARCHAR(255)
-phone               VARCHAR(50)
-website             TEXT
-social_links        JSONB
-bio                 TEXT
-personal_background TEXT
-created_at          TIMESTAMP DEFAULT NOW()
-updated_at          TIMESTAMP DEFAULT NOW()
-```
+**agencies** — name (PK), website, location, size, guidelines_url, guidelines_raw, guidelines_parsed (JSONB), last_scraped_at, created_at, updated_at
 
-### Table: manuscripts
-```
-id              SERIAL PRIMARY KEY
-title           VARCHAR(500) NOT NULL
-genre           VARCHAR(255)
-word_count      INTEGER
-hook            TEXT
-synopsis        TEXT
-comp_title_1    VARCHAR(500)
-comp_author_1   VARCHAR(255)
-comp_title_2    VARCHAR(500)
-comp_author_2   VARCHAR(255)
-notes           TEXT
-author_id       INTEGER REFERENCES authors(id)
-created_at      TIMESTAMP DEFAULT NOW()
-updated_at      TIMESTAMP DEFAULT NOW()
-```
+**authors** — id (PK), name, email, phone, website, social_links (JSONB), bio, personal_background, created_at, updated_at
 
-### Table: query_letters
-```
-id              SERIAL PRIMARY KEY
-manuscript_id   INTEGER REFERENCES manuscripts(id)
-agent_name      VARCHAR(255)
-agency_name     VARCHAR(255)
-fixed_content   TEXT
-custom_content  TEXT
-full_letter     TEXT
-grade           VARCHAR(5)
-score           FLOAT
-critique        JSONB
-guidelines_used TEXT
-model_used      VARCHAR(100)
-created_at      TIMESTAMP DEFAULT NOW()
-```
+**manuscripts** — id (PK), title, genre, word_count, hook, synopsis, comp_title_1/2, comp_author_1/2, notes, author_id (FK), created_at, updated_at
 
-### Table: scraping_jobs
-```
-id              SERIAL PRIMARY KEY
-job_type        VARCHAR(50)
-status          VARCHAR(20)
-parameters      JSONB
-results         JSONB
-started_at      TIMESTAMP
-completed_at    TIMESTAMP
-```
+**query_letters** — id (PK), manuscript_id (FK), agent_name, agency_name, fixed_content, custom_content, full_letter, grade, score, critique (JSONB), guidelines_used, model_used, created_at
 
-## Key Flows
+**scraping_jobs** — id (PK), job_type, status, parameters (JSONB), results (JSONB), started_at, completed_at
 
-### Comp Title Lookup
-1. User enters manuscript genre
-2. Query `top-book-titles` for books in same genre
-3. Semantic search for similar titles
-4. Present as "Suggested Comp Titles" with ratings/reviews
+### Qdrant Collections
 
-### Query Letter Generation
-1. User selects manuscript + target agent(s)
-2. App loads agent data from `literary-agents` (Qdrant)
-3. App loads agency's parsed guidelines from PostgreSQL
-4. App looks up comp titles in `top-book-titles` for market context
-5. LLM writes personalized content using:
-   - Agent's specific interests/bio
-   - Agency's submission requirements
-   - Market data for comp titles
-   - Manuscript details
-6. App assembles: header (fixed) + custom content (LLM) + bio (fixed) + closing (fixed)
-7. Optional: Auditor grades the letter
-8. Save to PostgreSQL, export as DOCX
+**literary-agents** — 4096-dim cosine, point ID = MD5(name@agency)
+- Fields: name, agency, genres[], accepts_new_authors, agency_size, submission_method, response_time, bio, notes, email, twitter, website, agency_website, location, phone, preferred_contact, guidelines_url, submission_guidelines_url, source, last_updated
 
-### Agent Scraping
-1. Search agent directories via SearXNG
-2. Scrape pages via crawl4ai
-3. LLM extracts structured agent data
-4. Store in `literary-agents` Qdrant collection
-5. Enrich missing fields (email, website, location) via web search
-
-### Guidelines Scraping
-1. Group agents by agency
-2. Probe agency website for submission guidelines pages
-3. Scrape via crawl4ai → save raw HTML
-4. LLM parses into structured requirements
-5. Cache parsed guidelines in PostgreSQL
+**top-book-titles** (qdrant-forge, read-only) — 4096-dim cosine
+- Fields: title, author, genre, goodreads_rating, goodreads_ratings_count, goodreads_reviews_count, pages, published_year, series, titling_pattern, data_source
 
 ## Infrastructure
 
-- **unRAID server** at 192.168.1.169
-- **Qdrant** at 192.168.1.169:6333
-- **PostgreSQL 15** at 192.168.1.169:5432 (container: postgresql15, user: root, password: b42,W37k)
-- **SearXNG** at 192.168.1.169:11999
-- **crawl4ai** available
-- **GitHub**: minisaurus org, authenticated via `gh` CLI
+| Service | Host | Port |
+|---|---|---|
+| QueryForge v2 | 192.168.1.169 | 12123 |
+| Qdrant | 192.168.1.169 | 6333 |
+| PostgreSQL 15 | 192.168.1.169 | 5432 |
+| SearXNG | 192.168.1.169 | 11999 |
+| crawl4ai | 192.168.1.169 | 11235 |
 
-## LLM Models
+## GitHub
 
-- GLM-4.7 (Zhipu AI direct) — primary
-- GLM-4.7 Flash (OpenRouter) — fast tasks
-- GLM-5.1 (OpenRouter) — heavy tasks
-- Embedding: Qwen3-Embedding-8B via OpenRouter (4096-dim)
+https://github.com/minisaurus/query-forge-v2
 
-## Migration from Old Version
-
-- Qdrant `literary-agents` collection: keep as-is (151 agents)
-- 20 guideline markdown files from `output/guidelines/`: import into PostgreSQL
-- 1 author profile from `output/authors/`: import into PostgreSQL
-- 6 manuscripts from `output/manuscripts/`: import into PostgreSQL (test data)
+Branches: master
